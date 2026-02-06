@@ -81,6 +81,32 @@ impl Fr {
     }
 }
 
+/// Montgomery batch inversion: compute all inverses of `vals[..n]` using a
+/// single field inversion + 3*(n-1) multiplications, writing results into `out`.
+/// Both `vals` and `out` must have the same length.
+pub fn batch_inverse(vals: &[Fr], out: &mut [Fr]) {
+    let n = vals.len();
+    debug_assert_eq!(n, out.len(), "batch_inverse: len mismatch");
+
+    // 1) Build prefix products in `out`: out[i] = vals[0] * vals[1] * ... * vals[i]
+    out[0] = vals[0];
+    for i in 1..n {
+        out[i] = out[i - 1] * vals[i];
+    }
+
+    // 2) Invert the total product
+    let mut inv_acc = out[n - 1]
+        .inverse()
+        .expect("batch_inverse: not zero element");
+
+    // 3) Sweep back to recover individual inverses
+    for i in (1..n).rev() {
+        out[i] = inv_acc * out[i - 1];
+        inv_acc = inv_acc * vals[i];
+    }
+    out[0] = inv_acc;
+}
+
 impl Add for Fr {
     type Output = Fr;
     fn add(self, rhs: Fr) -> Fr {
