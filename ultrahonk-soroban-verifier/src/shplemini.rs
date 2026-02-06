@@ -39,28 +39,30 @@ pub fn verify_shplemini(
     //   [2]           = gemini_r
     //   [3 .. 3+log_n)  = fold round denominators (j = log_n down to 1)
     //   [3+log_n .. 3+log_n + 2*(log_n-1))  = pairs (z - r^j, z + r^j) for j=1..log_n
+    // Max batch size: 3*CONST_PROOF_SIZE_LOG_N + 1 (upper bound when log_n == CONST_PROOF_SIZE_LOG_N)
+    const MAX_BATCH: usize = 3 * CONST_PROOF_SIZE_LOG_N + 1;
     let batch_size = 3 + log_n + 2 * (log_n - 1);
-    let mut to_invert = alloc::vec![Fr::zero(); batch_size];
+    let mut to_invert = [Fr::zero(); MAX_BATCH];
+    let mut inverted = [Fr::zero(); MAX_BATCH];
 
     to_invert[0] = tp.shplonk_z - r_pows[0];
     to_invert[1] = tp.shplonk_z + r_pows[0];
     to_invert[2] = tp.gemini_r;
 
-    // Fold round denominators: r^j * (1 - u_j) + u_j, for j = log_n down to 1
+    // fold round denominators: r^j * (1 - u_j) + u_j, for j = log_n down to 1
     for j in (1..=log_n).rev() {
         let u = tp.sumcheck_u_challenges[j - 1];
         to_invert[3 + (log_n - j)] = r_pows[j - 1] * (Fr::one() - u) + u;
     }
 
-    // Further folding denominators: (z - r^j) and (z + r^j) for j = 1..log_n
+    // further folding denominators: (z - r^j) and (z + r^j) for j = 1..log_n
     let further_base = 3 + log_n;
     for j in 1..log_n {
         to_invert[further_base + 2 * (j - 1)] = tp.shplonk_z - r_pows[j];
         to_invert[further_base + 2 * (j - 1) + 1] = tp.shplonk_z + r_pows[j];
     }
 
-    // Single batch inversion
-    let inverted = batch_inverse(&to_invert).ok_or("shplemini batch inversion failed")?;
+    batch_inverse(&to_invert[..batch_size], &mut inverted[..batch_size]);
 
     // Unpack results
     let pos0 = inverted[0];

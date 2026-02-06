@@ -74,7 +74,8 @@ fn compute_next_target_sum(
     }
 
     // Batch invert all 8 denominators with a single Fr::inverse()
-    let inv_denoms = batch_inverse(&denoms).ok_or("denom zero")?;
+    let mut inv_denoms = [Fr::zero(); BATCHED_RELATION_PARTIAL_LENGTH];
+    batch_inverse(&denoms, &mut inv_denoms);
 
     // Σ u_i * inv_denom_i
     let mut acc = Fr::zero();
