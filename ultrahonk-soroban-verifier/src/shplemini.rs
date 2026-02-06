@@ -1,7 +1,7 @@
 //! Shplemini batch-opening verifier for BN254
 use crate::ec::helpers::negate;
 use crate::ec::{g1_msm, pairing_check};
-use crate::field::Fr;
+use crate::field::{batch_inverse, Fr};
 use crate::trace;
 use crate::types::{
     G1Point, Proof, Transcript, VerificationKey, CONST_PROOF_SIZE_LOG_N, NUMBER_OF_ENTITIES,
@@ -23,6 +23,50 @@ pub fn verify_shplemini(
     for i in 1..log_n {
         r_pows[i] = r_pows[i - 1] * r_pows[i - 1];
     }
+
+    // We need the following inversions:
+    //   - (z - r^0), (z + r^0)          for shplonk weights (pos0, neg0)
+    //   - gemini_r                       for shifted weight
+    //   - (r^j*(1-u_j) + u_j)           for j in 1..=log_n  (fold round denoms)
+    //   - (z - r^j), (z + r^j)          for j in 1..log_n   (further folding)
+    //
+    // Total: 2 + 1 + log_n + 2*(log_n - 1) = 3*log_n + 1 values.
+
+    // Collect all values to invert into a flat array.
+    // Layout:
+    //   [0]           = z - r^0
+    //   [1]           = z + r^0
+    //   [2]           = gemini_r
+    //   [3 .. 3+log_n)  = fold round denominators (j = log_n down to 1)
+    //   [3+log_n .. 3+log_n + 2*(log_n-1))  = pairs (z - r^j, z + r^j) for j=1..log_n
+    let batch_size = 3 + log_n + 2 * (log_n - 1);
+    let mut to_invert = alloc::vec![Fr::zero(); batch_size];
+
+    to_invert[0] = tp.shplonk_z - r_pows[0];
+    to_invert[1] = tp.shplonk_z + r_pows[0];
+    to_invert[2] = tp.gemini_r;
+
+    // Fold round denominators: r^j * (1 - u_j) + u_j, for j = log_n down to 1
+    for j in (1..=log_n).rev() {
+        let u = tp.sumcheck_u_challenges[j - 1];
+        to_invert[3 + (log_n - j)] = r_pows[j - 1] * (Fr::one() - u) + u;
+    }
+
+    // Further folding denominators: (z - r^j) and (z + r^j) for j = 1..log_n
+    let further_base = 3 + log_n;
+    for j in 1..log_n {
+        to_invert[further_base + 2 * (j - 1)] = tp.shplonk_z - r_pows[j];
+        to_invert[further_base + 2 * (j - 1) + 1] = tp.shplonk_z + r_pows[j];
+    }
+
+    // Single batch inversion
+    let inverted = batch_inverse(&to_invert).ok_or("shplemini batch inversion failed")?;
+
+    // Unpack results
+    let pos0 = inverted[0];
+    let neg0 = inverted[1];
+    let gemini_r_inv = inverted[2];
+
     // 2) allocate arrays
     // Match Solidity sizing: NUMBER_OF_ENTITIES + CONST_PROOF_SIZE_LOG_N + 2
     // Layout:
@@ -37,14 +81,7 @@ pub fn verify_shplemini(
     let mut coms = [G1Point::infinity(); TOTAL];
 
     // 3) compute shplonk weights
-    let pos0 = (tp.shplonk_z - r_pows[0])
-        .inverse()
-        .ok_or("shplonk denominator (z - r^0) is zero")?;
-    let neg0 = (tp.shplonk_z + r_pows[0])
-        .inverse()
-        .ok_or("shplonk denominator (z + r^0) is zero")?;
     let unshifted = pos0 + tp.shplonk_nu * neg0;
-    let gemini_r_inv = tp.gemini_r.inverse().ok_or("gemini_r challenge is zero")?;
     let shifted = gemini_r_inv * (pos0 - tp.shplonk_nu * neg0);
     // 4) shplonk_Q
     scalars[0] = Fr::one();
@@ -139,7 +176,7 @@ pub fn verify_shplemini(
         let _ = j; // silence "assigned but never read" in non-trace builds
     }
 
-    // 7) folding rounds
+    // 7) folding rounds — use batch-inverted denominators
     let mut fold_pos = [Fr::zero(); CONST_PROOF_SIZE_LOG_N];
     let mut cur = eval_acc;
     for j in (1..=log_n).rev() {
@@ -147,24 +184,19 @@ pub fn verify_shplemini(
         let u = tp.sumcheck_u_challenges[j - 1];
         let num = r2 * cur * Fr::from_u64(2)
             - proof.gemini_a_evaluations[j - 1] * (r2 * (Fr::one() - u) - u);
-        let den = r2 * (Fr::one() - u) + u;
-        let den_inv = den.inverse().ok_or("fold round denominator is zero")?;
+        let den_inv = inverted[3 + (log_n - j)];
         cur = num * den_inv;
         fold_pos[j - 1] = cur;
     }
     // 8) accumulate constant term
     let mut const_acc = fold_pos[0] * pos0 + proof.gemini_a_evaluations[0] * tp.shplonk_nu * neg0;
     let mut v_pow = tp.shplonk_nu * tp.shplonk_nu;
-    // 9) further folding + commit
+    // 9) further folding + commit — use batch-inverted denominators
     // Base index where fold commitments start
     let base = 1 + NUMBER_OF_ENTITIES;
     for j in 1..log_n {
-        let pos_inv = (tp.shplonk_z - r_pows[j])
-            .inverse()
-            .ok_or("shplonk denominator (z - r^i) is zero")?;
-        let neg_inv = (tp.shplonk_z + r_pows[j])
-            .inverse()
-            .ok_or("shplonk denominator (z + r^i) is zero")?;
+        let pos_inv = inverted[further_base + 2 * (j - 1)];
+        let neg_inv = inverted[further_base + 2 * (j - 1) + 1];
         let sp = v_pow * pos_inv;
         let sn = v_pow * tp.shplonk_nu * neg_inv;
 

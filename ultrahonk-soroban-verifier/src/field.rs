@@ -81,6 +81,32 @@ impl Fr {
     }
 }
 
+/// Montgomery batch inversion: compute all inverses using a single
+/// field inversion + 3*(n-1) multiplications.
+/// Returns `None` if any element is zero.
+pub fn batch_inverse(vals: &[Fr]) -> Option<alloc::vec::Vec<Fr>> {
+    let n = vals.len();
+    if n == 0 {
+        return Some(alloc::vec::Vec::new());
+    }
+    // 1) Build prefix products: prefix[i] = vals[0] * vals[1] * ... * vals[i]
+    let mut prefix = alloc::vec::Vec::with_capacity(n);
+    prefix.push(vals[0]);
+    for i in 1..n {
+        prefix.push(prefix[i - 1] * vals[i]);
+    }
+    // 2) Invert the total product
+    let mut inv_acc = prefix[n - 1].inverse()?;
+    // 3) Sweep back to recover individual inverses
+    let mut result = alloc::vec![Fr::zero(); n];
+    for i in (1..n).rev() {
+        result[i] = inv_acc * prefix[i - 1];
+        inv_acc = inv_acc * vals[i];
+    }
+    result[0] = inv_acc;
+    Some(result)
+}
+
 impl Add for Fr {
     type Output = Fr;
     fn add(self, rhs: Fr) -> Fr {
