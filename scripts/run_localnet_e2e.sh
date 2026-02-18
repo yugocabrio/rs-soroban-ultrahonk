@@ -60,9 +60,12 @@ if [[ "$FUND_OK" -ne 1 ]]; then
   exit 1
 fi
 
-echo "Building contract (optimized)..."
+echo "Building Noir circuits (vk + proof)..."
+bash "$ROOT_DIR/tests/build_circuits.sh"
+
+echo "Building contract..."
 rustup target add wasm32v1-none >/dev/null 2>&1 || true
-stellar contract build --optimize
+stellar contract build
 
 echo "Deploying contract..."
 DEPLOY_OUTPUT=$(stellar contract deploy \
