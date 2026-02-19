@@ -62,8 +62,9 @@ pub fn verify_shplemini(
         to_invert[further_base + 2 * (j - 1) + 1] = tp.shplonk_z + r_pows[j];
     }
 
-    batch_inverse(&to_invert[..batch_size], &mut inverted[..batch_size])
-        .map_err(|_| "shplemini: batch inversion failed (zero denominator in shplonk/gemini/fold)")?;
+    batch_inverse(&to_invert[..batch_size], &mut inverted[..batch_size]).map_err(|_| {
+        "shplemini: batch inversion failed (zero denominator in shplonk/gemini/fold)"
+    })?;
 
     // Unpack results
     let pos0 = inverted[0];
