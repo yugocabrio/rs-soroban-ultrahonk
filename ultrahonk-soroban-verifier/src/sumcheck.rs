@@ -1,6 +1,6 @@
 //! Sum-check verifier
 use crate::{
-    field::Fr,
+    field::{batch_inverse, Fr},
     relations::accumulate_relation_evaluations,
     types::{Transcript, VerificationKey, BATCHED_RELATION_PARTIAL_LENGTH},
 };
@@ -55,26 +55,33 @@ fn check_sum(round_univariate: &[Fr], round_target: Fr) -> bool {
     total_sum == round_target
 }
 
-/// Calculate next target value for the sum-check
+/// Calculate next target value for the sum-check using batch inversion.
+/// Instead of 8 individual inversions per round, uses Montgomery's trick
+/// to compute all 8 with a single inversion + 21 multiplications.
 #[inline(always)]
 fn compute_next_target_sum(
     round_univariate: &[Fr],
     round_challenge: Fr,
 ) -> Result<Fr, &'static str> {
-    // B(χ) = ∏ (χ - i)
+    // B(χ) = ∏ (χ - i) for i in 0..8
+    // Also collect denominators for batch inversion
+    let mut denoms = [Fr::zero(); BATCHED_RELATION_PARTIAL_LENGTH];
     let mut b_poly = Fr::one();
     for i in 0..BATCHED_RELATION_PARTIAL_LENGTH {
-        b_poly = b_poly * (round_challenge - Fr::from_u64(i as u64));
+        let diff = round_challenge - Fr::from_u64(i as u64);
+        b_poly = b_poly * diff;
+        denoms[i] = Fr::from_bytes(&BARY_BYTES[i]) * diff;
     }
 
-    // Σ u_i / (BARY[i] * (χ - i))
+    // Batch invert all 8 denominators with a single Fr::inverse()
+    let mut inv_denoms = [Fr::zero(); BATCHED_RELATION_PARTIAL_LENGTH];
+    batch_inverse(&denoms, &mut inv_denoms)
+        .map_err(|_| "sumcheck: barycentric denominator is zero")?;
+
+    // Σ u_i * inv_denom_i
     let mut acc = Fr::zero();
     for i in 0..BATCHED_RELATION_PARTIAL_LENGTH {
-        let bary_val = Fr::from_bytes(&BARY_BYTES[i]);
-
-        let denom = bary_val * (round_challenge - Fr::from_u64(i as u64));
-        let inv = denom.inverse().ok_or("denom zero")?;
-        acc = acc + (round_univariate[i] * inv);
+        acc = acc + (round_univariate[i] * inv_denoms[i]);
     }
 
     Ok(b_poly * acc)

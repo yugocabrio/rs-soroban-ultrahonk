@@ -25,7 +25,7 @@ stellar keys address alice
 
 # 3) Build + deploy (constructor requires a VK from tests/build_circuits.sh)
 rustup target add wasm32v1-none
-stellar contract build --optimize
+stellar contract build
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/rs_soroban_ultrahonk.wasm \
   --source alice \
